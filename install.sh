@@ -40,12 +40,69 @@ is_enabled() {
     [[ ! -d "$state_dir/disabled" ]]
 }
 
+valid_telegram_config() {
+    [[ $1 =~ ^[0-9]+:[A-Za-z0-9_-]+$ && $2 =~ ^-?[0-9]+$ ]]
+}
+
+telegram_setup() {
+    local chat_id=${1:-${TELEGRAM_CHAT_ID:-}} token=${BOT_TOKEN:-} config_tmp
+    if [[ -z "$chat_id" ]]; then
+        echo 'Usage: roblox-killer telegram-setup CHAT_ID' >&2
+        return 2
+    fi
+    if [[ -z "$token" ]]; then
+        read -r -s -p 'Telegram bot token: ' token
+        printf '\n'
+    fi
+    if ! valid_telegram_config "$token" "$chat_id"; then
+        echo 'Invalid bot token or numeric chat ID.' >&2
+        return 2
+    fi
+    chmod 700 "$state_dir"
+    config_tmp=$(mktemp "$state_dir/.telegram.XXXXXX")
+    printf '%s\n%s\n' "$token" "$chat_id" > "$config_tmp"
+    chmod 600 "$config_tmp"
+    mv -f "$config_tmp" "$state_dir/telegram.conf"
+    echo "Telegram configured for chat $chat_id."
+}
+
+send_telegram() {
+    local text=$1 token chat_id response
+    [[ -f "$state_dir/telegram.conf" ]] || return 0
+    if ! { IFS= read -r token; IFS= read -r chat_id; } < "$state_dir/telegram.conf" ||
+        ! valid_telegram_config "$token" "$chat_id"; then
+        echo 'Telegram configuration is invalid. Run telegram-setup again.' >&2
+        return 1
+    fi
+    # Keep the token out of process arguments and ignore user curl configuration.
+    if ! response=$(curl --disable --silent --fail --proto '=https' \
+        --connect-timeout 5 --max-time 10 --config - \
+        --data-urlencode "chat_id=$chat_id" --data-urlencode "text=$text" <<CURL_CONFIG
+url = "https://api.telegram.org/bot$token/sendMessage"
+CURL_CONFIG
+    ); then
+        echo 'Telegram report failed (network or API error).' >&2
+        return 1
+    fi
+    if [[ $(printf '%s' "$response" | plutil -extract ok raw -o - - 2>/dev/null) != true ]]; then
+        echo 'Telegram did not confirm the report.' >&2
+        return 1
+    fi
+}
+
 block_player() {
     is_enabled || return 0
     # Exact executable name deliberately excludes RobloxStudio and RobloxStudioBeta.
     if pkill -KILL -u "$user_id" -x RobloxPlayer 2>/dev/null; then
         date '+%Y-%m-%d %H:%M:%S %z' > "$state_dir/last-blocked"
         printf '%s RobloxPlayer killed\n' "$(cat "$state_dir/last-blocked")"
+        if [[ -f "$state_dir/telegram.conf" ]]; then
+            # shortcut: best-effort delivery without retries; add a queue if offline delivery is needed.
+            send_telegram "Roblox Killer: Roblox Player detected and killed.
+Mac: $(hostname)
+Time: $(cat "$state_dir/last-blocked")
+Roblox Studio is not targeted." &
+        fi
         # A stalled notification must not delay blocking or spawn more notifiers.
         if [[ -z "${notification_pid:-}" ]] || ! kill -0 "$notification_pid" 2>/dev/null; then
             osascript -e 'display notification "Roblox was launched and has been closed." with title "Roblox Killer"' >/dev/null 2>&1 &
@@ -75,6 +132,11 @@ status() {
     else
         echo 'Last blocked: never'
     fi
+    if [[ -f "$state_dir/telegram.conf" ]]; then
+        echo 'Telegram: configured'
+    else
+        echo 'Telegram: not configured'
+    fi
 }
 
 main() {
@@ -94,6 +156,16 @@ main() {
             if is_enabled; then main off; else main on; fi
             ;;
         status) status ;;
+        telegram-setup) telegram_setup "${2:-}" ;;
+        telegram-test)
+            if [[ ! -f "$state_dir/telegram.conf" ]]; then
+                echo 'Run telegram-setup CHAT_ID first.' >&2
+                return 1
+            fi
+            send_telegram "TEST REPORT: Roblox Killer on $(hostname).
+Telegram delivery test only. No application was launched or killed." || return 1
+            echo 'Telegram test report sent.'
+            ;;
         daemon)
             trap 'exit 0' TERM INT
             while true; do
@@ -102,7 +174,7 @@ main() {
             done
             ;;
         *)
-            echo 'Usage: roblox-killer [on|off|toggle|status]' >&2
+            echo 'Usage: roblox-killer [on|off|toggle|status|telegram-setup CHAT_ID|telegram-test]' >&2
             return 2
             ;;
     esac
@@ -114,6 +186,14 @@ fi
 RUNTIME
 chmod 700 "$runtime"
 mv -f "$runtime" "$bin_dir/roblox-killer"
+
+if [[ -n "${BOT_TOKEN:-}" || -n "${TELEGRAM_CHAT_ID:-}" ]]; then
+    if [[ -z "${BOT_TOKEN:-}" || -z "${TELEGRAM_CHAT_ID:-}" ]]; then
+        echo 'Set both BOT_TOKEN and TELEGRAM_CHAT_ID to configure Telegram during installation.' >&2
+        exit 1
+    fi
+    "$bin_dir/roblox-killer" telegram-setup "$TELEGRAM_CHAT_ID"
+fi
 
 xml_escape() {
     local value=$1

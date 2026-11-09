@@ -1,6 +1,6 @@
 # Roblox Killer for macOS
 
-A per-user launch agent that kills **Roblox Player**, leaves **Roblox Studio** alone, and sends a macOS notification after a successful kill. No dependencies, admin privileges, or developer tools required.
+A per-user launch agent that kills **Roblox Player**, leaves **Roblox Studio** alone, and sends a macOS notification after a successful kill. Optional Telegram reports go to your chosen chat or group. No dependencies, admin privileges, or developer tools required.
 
 ## Install
 
@@ -24,6 +24,31 @@ Installation starts blocking immediately and registers automatic startup at logi
 ```
 
 If `~/.local/bin` is on your `PATH`, you can use just `roblox-killer`. On/off persists across restarts. Status reports the saved setting, whether the agent is loaded, whether the player is running, and the last successful block.
+
+## Telegram reports
+
+Add your bot to the destination group and allow it to send messages. Then configure its numeric chat ID (group IDs are usually negative):
+
+```sh
+~/.local/bin/roblox-killer telegram-setup YOUR_CHAT_ID
+# Enter the bot token at the hidden prompt.
+~/.local/bin/roblox-killer telegram-test
+```
+
+Successful kills now send the Mac's hostname and event timestamp to that chat. The test command sends a clearly labeled test without killing any apps. Configuration takes effect without restarting the agent and survives reinstalling.
+
+For automatic setup during installation, supply `BOT_TOKEN` and `TELEGRAM_CHAT_ID` to the installer. This prompts for the token instead of putting it in shell history:
+
+```sh
+read -r -s 'BOT_TOKEN?Telegram bot token: '; echo  # macOS default zsh
+curl -fsSL https://raw.githubusercontent.com/esafirm/roblox-killer/main/install.sh |
+  BOT_TOKEN="$BOT_TOKEN" TELEGRAM_CHAT_ID=YOUR_CHAT_ID /bin/bash
+unset BOT_TOKEN
+```
+
+The token is stored in `~/Library/Application Support/roblox-killer/telegram.conf` with owner-only permissions. It is not embedded in the installer, launch agent plist, logs, or curl process arguments. Never commit or share this file. Anyone who can read it can control the bot. `.env.local` is only a local development file and is not automatically loaded on another Mac.
+
+Delivery is best-effort with a 10-second timeout, no retries, and no offline queue. API failures are logged in `agent-error.log` without the token. Blocking continues independently of Telegram. Normal Telegram rate limits apply.
 
 ## Behavior and limits
 
